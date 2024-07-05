@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { CreateUserDTO } from './dto/createUser.dto';
@@ -12,6 +13,8 @@ import { LoginUserDTO } from './dto/loginUser.dto';
 import { JwtService } from '@nestjs/jwt';
 import { RefreshToken } from './model/RefreshToken';
 import { v4 as uuidv4 } from 'uuid';
+import { ChangePasswordDTO } from './dto/changePassword.dto';
+import { Request } from 'express';
 
 @Injectable()
 export class AuthService {
@@ -74,5 +77,18 @@ export class AuthService {
         ...tokens,
         userId: user._id
     }
+  }
+
+  async changePassword(userId, oldPassword: string, newPassword: string){
+    // Find the user
+    const user = await this.userModel.findOne({_id: userId});
+    if(!user) throw new NotFoundException("Please login again");
+    // Compare the old password with the new password in DB
+    const isMatched = await bcrypt.compare(oldPassword,user.password);
+    if(!isMatched) throw new UnauthorizedException("Credentials invalid");
+    if(oldPassword===newPassword) throw new BadRequestException("Old and New passwords cannot be same");
+    // Change user's password after hashing it
+    const hashedPassword = await bcrypt.hash(newPassword,10);
+    await this.userModel.findByIdAndUpdate(userId,{password: hashedPassword});
   }
 }
