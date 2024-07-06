@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { CreateUserDTO } from './dto/createUser.dto';
@@ -12,6 +13,9 @@ import { LoginUserDTO } from './dto/loginUser.dto';
 import { JwtService } from '@nestjs/jwt';
 import { RefreshToken } from './model/RefreshToken';
 import { v4 as uuidv4 } from 'uuid';
+import { nanoid } from 'nanoid';
+import { ResetToken } from './model/ResetToken';
+import { MailService } from 'src/services/mail.service';
 
 @Injectable()
 export class AuthService {
@@ -19,7 +23,9 @@ export class AuthService {
     @InjectModel(User.name) private userModel: Model<User>,
     @InjectModel(RefreshToken.name)
     private refreshTokenModel: Model<RefreshToken>,
+    @InjectModel(ResetToken.name) private resetTokenModel: Model<ResetToken>,
     private jwt: JwtService,
+    private mailService: MailService
   ) {}
 
   async generateUserToken(
@@ -74,5 +80,47 @@ export class AuthService {
         ...tokens,
         userId: user._id
     }
+  }
+
+  async changePassword(userId, oldPassword: string, newPassword: string){
+    // Find the user
+    const user = await this.userModel.findOne({_id: userId});
+    if(!user) throw new NotFoundException("Please login again");
+    // Compare the old password with the new password in DB
+    const isMatched = await bcrypt.compare(oldPassword,user.password);
+    if(!isMatched) throw new UnauthorizedException("Credentials invalid");
+    if(oldPassword===newPassword) throw new BadRequestException("Old and New passwords cannot be same");
+    // Change user's password after hashing it
+    const hashedPassword = await bcrypt.hash(newPassword,10);
+    await this.userModel.findByIdAndUpdate(userId,{password: hashedPassword});
+  }
+
+  async forgotPassword(email: string){
+    // Find the user with given email
+    const user = await this.userModel.findOne({email});
+    if(!user) throw new NotFoundException("No user with such email found");
+    // Generate random 64 character reset token and
+    // set expiry date to 1 hour later
+    const resetToken = nanoid(64);
+    const expiryDate = new Date();
+    expiryDate.setHours(expiryDate.getHours() + 1);
+    await this.resetTokenModel.create({
+      token: resetToken,
+      userId: user._id,
+      expiryDate
+    })
+    // Send the link to the user by email (nodemailer)
+    this.mailService.sendPasswordResetEmail(email,resetToken);
+    return {message: 'Reset password email sent successfully'};
+  }
+
+  async resetPassword(resetToken: string, newPassword: string){
+    // Find the user with reset Token and expiry date greater 
+    // than current date
+    const token = await this.resetTokenModel.findOneAndDelete({ token: resetToken, expiryDate: {$gte: new Date()}});
+    if(!token) throw new UnauthorizedException("Invalid link");
+    // Change user password after hashing it
+    const hashedPassword = await bcrypt.hash(newPassword,10);
+    await this.userModel.findByIdAndUpdate(token._id,{password: hashedPassword});
   }
 }
